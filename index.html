@@ -166,10 +166,57 @@ background:radial-gradient(circle at 10% 10%,var(--soft),transparent 35%),radial
 </div>
 <div id="toast" class="toast"></div>
 
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+import { getDatabase, ref, onValue, push, set, remove, update } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "PASTE_API_KEY",
+  authDomain: "PASTE_AUTH_DOMAIN",
+  databaseURL: "PASTE_DATABASE_URL",
+  projectId: "PASTE_PROJECT_ID",
+  storageBucket: "PASTE_STORAGE_BUCKET",
+  messagingSenderId: "PASTE_MESSAGING_SENDER_ID",
+  appId: "PASTE_APP_ID"
+};
+
+window.ClasslyFirebase = {initializeApp,getDatabase,ref,onValue,push,set,remove,update,firebaseConfig};
+</script>
+
 <script>
 const KEY='classlyDataV1';
 let data=JSON.parse(localStorage.getItem(KEY)||'null')||{name:'',theme:'boy',classes:[],deadlines:[],reminders:[]};
 let modalType=null;
+let sharedDB=null, sharedReady=false;
+
+function initSharedDatabase(){
+ const cfg=window.ClasslyFirebase?.firebaseConfig;
+ if(!cfg || cfg.apiKey.startsWith('PASTE_')) return;
+ try{
+  const fb=window.ClasslyFirebase, app=fb.initializeApp(cfg);
+  sharedDB=fb.getDatabase(app); sharedReady=true;
+  fb.onValue(fb.ref(sharedDB,'classly'),snap=>{
+   const v=snap.val();
+   if(v){
+    data.classes=Object.values(v.classes||{});
+    data.deadlines=Object.values(v.deadlines||{});
+    data.reminders=Object.values(v.reminders||{});
+    localStorage.setItem(KEY,JSON.stringify(data)); render();
+   }
+  });
+ }catch(e){console.error('Firebase:',e)}
+}
+async function cloudAdd(type,item){
+ const fb=window.ClasslyFirebase, r=fb.push(fb.ref(sharedDB,'classly/'+type));
+ item.id=r.key; await fb.set(r,item);
+}
+async function cloudDelete(type,id){
+ await window.ClasslyFirebase.remove(window.ClasslyFirebase.ref(sharedDB,'classly/'+type+'/'+id));
+}
+async function cloudToggle(type,id,done){
+ await window.ClasslyFirebase.update(window.ClasslyFirebase.ref(sharedDB,'classly/'+type+'/'+id),{done});
+}
 
 const days=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const shortDays=['Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -261,8 +308,14 @@ function renderDeadlines(){
 function renderReminders(){
  document.getElementById('reminderList').innerHTML=data.reminders.length?[...data.reminders].reverse().map(reminderHTML).join(''):'<div class="empty">No reminders yet. Add something you do not want to forget.</div>';
 }
-function toggleDone(type,id){const x=data[type].find(x=>x.id===id);if(x){x.done=!x.done;save();render();toast(x.done?'Marked as complete ✓':'Marked as pending')}}
-function deleteItem(type,id){data[type]=data[type].filter(x=>x.id!==id);save();render();toast('Removed successfully')}
+async function toggleDone(type,id){
+ const x=data[type].find(x=>x.id===id);
+ if(x){x.done=!x.done;if(sharedReady)await cloudToggle(type,id,x.done);save();render();toast(x.done?'Marked as complete ✓':'Marked as pending')}
+}
+async function deleteItem(type,id){
+ if(sharedReady)await cloudDelete(type,id);
+ data[type]=data[type].filter(x=>x.id!==id);save();render();toast('Removed successfully')
+}
 
 function openModal(type){
  modalType=type;document.getElementById('modalBg').classList.add('show');
@@ -287,25 +340,32 @@ function openModal(type){
 }
 function closeModal(){document.getElementById('modalBg').classList.remove('show');modalType=null}
 document.getElementById('modalBg').onclick=e=>{if(e.target.id==='modalBg')closeModal()};
-document.getElementById('saveModal').onclick=()=>{
- const id=Date.now().toString();
+document.getElementById('saveModal').onclick=async()=>{
+ const id=Date.now().toString();let item=null,type=null;
  if(modalType==='class'){
-   const subject=document.getElementById('fSubject').value.trim();if(!subject){toast('Add a subject');return}
-   data.classes.push({id,subject,day:document.getElementById('fDay').value,time:document.getElementById('fTime').value,room:document.getElementById('fRoom').value,teacher:document.getElementById('fTeacher').value});
+  const subject=document.getElementById('fSubject').value.trim();if(!subject){toast('Add a subject');return}
+  item={id,subject,day:document.getElementById('fDay').value,time:document.getElementById('fTime').value,room:document.getElementById('fRoom').value,teacher:document.getElementById('fTeacher').value};type='classes';
  }
  if(modalType==='deadline'){
-   const title=document.getElementById('fTitle').value.trim(),date=document.getElementById('fDate').value;if(!title||!date){toast('Add a title and due date');return}
-   data.deadlines.push({id,title,subject:document.getElementById('fSubject').value,date,done:false});
+  const title=document.getElementById('fTitle').value.trim(),date=document.getElementById('fDate').value;if(!title||!date){toast('Add a title and due date');return}
+  item={id,title,subject:document.getElementById('fSubject').value,date,done:false};type='deadlines';
  }
  if(modalType==='reminder'){
-   const text=document.getElementById('fText').value.trim();if(!text){toast('Write a reminder');return}
-   data.reminders.push({id,text,date:document.getElementById('fDate').value,done:false});
+  const text=document.getElementById('fText').value.trim();if(!text){toast('Write a reminder');return}
+  item={id,text,date:document.getElementById('fDate').value,done:false};type='reminders';
  }
- save();closeModal();render();toast('Added successfully ✓');
-};
-
-applyTheme();
+ if(item){
+  if(sharedReady){await cloudAdd(type,item);toast('Added for everyone ✓')}
+  else{data[type].push(item);save();toast('Added locally — connect Firebase first')}
+ }
+ closeModal();render();
+};applyTheme();
 if(data.name) startApp();
 </script>
 </body>
 </html>
+<script>
+window.addEventListener('load',()=>setTimeout(()=>{
+ if(typeof initSharedDatabase==='function')initSharedDatabase();
+},300));
+</script>
